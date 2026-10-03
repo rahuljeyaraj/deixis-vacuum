@@ -1,0 +1,12 @@
+[project]
+name = "deixis-vacuum"
+version = "0.1.0"
+description = "Send an ECOVACS DEEBOT robot vacuum to clean a box on its map (the vacuum adapter for deixis-doodle)"
+readme = "README.md"
+license = "GPL-3.0-or-later"
+# deebot-client 18.x ships Windows wheels for CPython 3.14 only
+requires-python = ">=3.14"
+dependencies = [
+    "deebot-client>=18.6,<19",
+    "aiohttp>=3.14",
+]
