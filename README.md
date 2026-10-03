@@ -33,7 +33,7 @@ uv venv --python 3.14 .venv
 uv pip install --python .venv\Scripts\python.exe -e .
 ```
 
-Put your ECOVACS app login in `~/.deixis-vacuum/ecovacs.env`. Use `ecovacs.env.example` as the template. Never put it in this repo. To use another folder, set `DEIXIS_VACUUM_HOME`.
+Copy `ecovacs.env.example` to `ecovacs.env` in this folder and fill in your ECOVACS app login. `verify` saves the token to `login_state.json` here too. Git ignores both files, so they're never committed. To keep them in another folder, set `DEIXIS_VACUUM_HOME`.
 
 ```powershell
 .venv\Scripts\python.exe vacuum.py verify                 # ECOVACS e-mails you a code

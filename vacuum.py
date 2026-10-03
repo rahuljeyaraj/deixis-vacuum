@@ -5,8 +5,7 @@ its own GPL-3.0 repository because it uses deebot-client (GPL-3.0).
 
 Tested on 3 Oct 2026 with a DEEBOT N50 PRO OMNI (class a2ywac, firmware 1.41.0).
 
-Login details and the saved token live outside the repo, in DEIXIS_VACUUM_HOME
-(default ~/.deixis-vacuum):
+Login details and the saved token live next to this file (gitignored), or in DEIXIS_VACUUM_HOME:
   ecovacs.env        ECOVACS_ACCOUNT=..., ECOVACS_PASSWORD=..., ECOVACS_COUNTRY=IN
   login_state.json   written by `verify`: a fixed device ID and the token (valid 7 days)
 Variables already set in the environment win over ecovacs.env.
@@ -42,7 +41,7 @@ from deebot_client.models import Credentials
 from deebot_client.mqtt_client import MqttClient, create_mqtt_config
 from deebot_client.util import md5
 
-HOME = Path(os.environ.get("DEIXIS_VACUUM_HOME") or Path.home() / ".deixis-vacuum")
+HOME = Path(os.environ.get("DEIXIS_VACUUM_HOME") or Path(__file__).resolve().parent)
 _STATE = HOME / "login_state.json"
 
 
