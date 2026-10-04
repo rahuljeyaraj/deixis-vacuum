@@ -1,6 +1,6 @@
 # deixis-vacuum
 
-Send a robot vacuum to clean a box on its map from Python: "clean **here**, this big".
+Send a robot vacuum to clean a box on its map from Python or over MCP: "clean **here**".
 
 This is the vacuum adapter for [deixis-doodle](https://github.com/rahuljeyaraj/deixis-doodle), which turns pointing and speech into a place (`Where`) that any robot can use. deixis-doodle drives a pen plotter, and this repo drives an unmodified, off-the-shelf robot vacuum. It's a separate repo because it uses [deebot-client](https://github.com/DeebotUniverse/client.py), which is GPL-3.0. deixis-doodle stays MIT.
 
@@ -48,12 +48,39 @@ Copy `ecovacs.env.example` to `ecovacs.env` in this folder and fill in your ECOV
 | `list` | Robots on the account, with class codes |
 | `watch --seconds 60` | Prints battery, state, errors, and robot and dock positions (map mm) |
 | `zone X1 Y1 X2 Y2 [--watch 120]` | Cleans that box |
+| `stop` | Stops cleaning. Sends the same order as deebot-client's own stop. **Not yet tried on the N50.** If the robot refuses it, run `sniff` while you press stop in the app |
 | `dock` | Sends the robot back to its dock |
 | `sniff --seconds 300` | Prints every message for the robot, including the orders the official app sends. Use it to learn a new robot's commands. |
 
 `--device N` (before the command) picks a robot from `list`. The default is 0.
 
 To find a box: run `watch`, or run `sniff` while you draw a zone in the app.
+
+## As an MCP server
+
+`deixis-vacuum-mcp` lets an app talk to the robot over MCP (stdio). The vacuum app in deixis-doodle uses it. It stays logged in and offers five tools:
+
+| Tool | What it does |
+|---|---|
+| `clean_area(where)` | Cleans one box. `where` is a deixis `Where` box in the robot's map frame: `{"frame": "map", "kind": "box", "box_mm": [x, y, width, height], ...}`. The box is cleaned exactly as given. A box in another frame, or with a side under 200 mm or over 8 m, is refused with the reason. It's never moved or shrunk to fit |
+| `stop()` | Stops cleaning |
+| `dock()` | Sends the robot back to its dock |
+| `status()` | State, battery, and the robot's and dock's positions in map mm, with how old each is |
+| `locate(wait_s)` | Asks the robot for fresh positions, waits, then returns `status()`. Used to line the floor camera up with the map |
+
+```powershell
+.venv\Scripts\deixis-vacuum-mcp.exe             # your robot (log in first, as above)
+.venv\Scripts\deixis-vacuum-mcp.exe --fake      # a pretend robot: no login, nothing moves
+```
+
+This server doesn't import deixis. It only reads the `Where` JSON, so any app that can send that message can drive the robot.
+
+Tests (pretend robot only, no login):
+
+```powershell
+uv pip install --python .venv\Scripts\python.exe -e ".[test]"
+.venv\Scripts\python.exe -m pytest
+```
 
 ## Safety and rules
 

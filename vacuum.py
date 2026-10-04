@@ -16,6 +16,7 @@ Usage:
   python vacuum.py list
   python vacuum.py watch --seconds 60      battery, state, robot and dock positions
   python vacuum.py zone X1 Y1 X2 Y2        clean that box (map millimetres)
+  python vacuum.py stop                    stop cleaning (not yet checked on the N50)
   python vacuum.py dock                    go back to the dock
   python vacuum.py sniff --seconds 300     print every message for the robot, incl. the app's orders
 """
@@ -120,6 +121,115 @@ async def _bot(session: aiohttp.ClientSession, index: int) -> tuple[Device, Mqtt
     return bot, mqtt
 
 
+def zone_command(rect: list[int]) -> CustomCommand:
+    """A zone clean as the ECOVACS app sends it: type "freeClean", value "3,null,x1,y1,x2,y2"
+    (3 = zone, then two opposite corners in map millimetres). See `cmd_zone`."""
+    value = "3,null," + ",".join(str(int(v)) for v in rect)
+    return CustomCommand("clean_V2", {"act": "start", "content": {"type": "freeClean", "value": value}})
+
+
+def stop_command() -> CustomCommand:
+    """Stop cleaning. The same order deebot-client's CleanV2(STOP) sends; not yet checked on the
+    N50 (capture the app's own stop with `sniff` if the robot refuses it)."""
+    return CustomCommand("clean_V2", {"act": "stop", "content": {"type": ""}})
+
+
+class CloudRobot:
+    """One robot on the ECOVACS cloud, kept logged in, for the MCP server (`vacuum_mcp.py`).
+
+    It remembers the last state, battery and the robot's and dock's positions (map mm) from
+    the robot's events. Run it on a selector event loop on Windows (see `_run`).
+    """
+
+    def __init__(self, index: int = 0, reply_timeout_s: float = 5.0) -> None:
+        self.index = index
+        self.reply_timeout_s = reply_timeout_s
+        self.session: aiohttp.ClientSession | None = None
+        self.bot: Device | None = None
+        self.mqtt: MqttClient | None = None
+        self.state: str | None = None
+        self.battery: int | None = None
+        self.robot: dict | None = None  # {"x", "y", "a", "t"} (t: time.monotonic())
+        self.dock_at: dict | None = None
+        self._replies: asyncio.Queue = asyncio.Queue()
+
+    async def start(self) -> None:
+        self.session = aiohttp.ClientSession()
+        self.bot, self.mqtt = await _bot(self.session, self.index)
+        subscribe = self.bot.events.subscribe
+        subscribe(ev.PositionsEvent, self._on_positions)
+        subscribe(ev.StateEvent, self._on_state)
+        subscribe(ev.BatteryEvent, self._on_battery)
+        subscribe(ev.CustomCommandEvent, self._on_reply)
+
+    async def close(self) -> None:
+        if self.mqtt is not None:
+            await self.mqtt.disconnect()
+        if self.session is not None:
+            await self.session.close()
+
+    async def _on_positions(self, event: ev.PositionsEvent) -> None:
+        for p in event.positions:
+            at = {"x": p.x, "y": p.y, "a": p.a, "t": time.monotonic()}
+            if p.type.name == "DEEBOT":
+                self.robot = at
+            elif p.type.name == "CHARGER":
+                self.dock_at = at
+
+    async def _on_state(self, event: ev.StateEvent) -> None:
+        self.state = event.state.name.lower()
+
+    async def _on_battery(self, event: ev.BatteryEvent) -> None:
+        self.battery = event.value
+
+    async def _on_reply(self, event: ev.CustomCommandEvent) -> None:
+        await self._replies.put(event.response)
+
+    async def _send(self, command: CustomCommand) -> dict:
+        """Send one order and wait for the robot's reply body ({"code": 0, ...} is accepted)."""
+        assert self.bot is not None, "start() first"
+        while not self._replies.empty():
+            self._replies.get_nowait()
+        await self.bot.execute_command(command)
+        try:
+            reply = await asyncio.wait_for(self._replies.get(), self.reply_timeout_s)
+        except TimeoutError:
+            return {"code": None, "msg": f"no reply within {self.reply_timeout_s} s"}
+        return reply.get("body", {}) if isinstance(reply, dict) else {}
+
+    async def clean_zone(self, rect: list[int]) -> dict:
+        return await self._send(zone_command(rect))
+
+    async def stop(self) -> dict:
+        return await self._send(stop_command())
+
+    async def dock(self) -> dict:
+        assert self.bot is not None, "start() first"
+        await self.bot.execute_command(self.bot.capabilities.charge.execute())
+        return {"code": 0}
+
+    def refresh(self) -> None:
+        """Ask the robot for fresh positions (they arrive as events)."""
+        if self.bot is not None:
+            self.bot.events.request_refresh(ev.PositionsEvent)
+
+    def status(self) -> dict:
+        now = time.monotonic()
+
+        def pos(p: dict | None) -> dict | None:
+            if p is None:
+                return None
+            return {"x": p["x"], "y": p["y"], "a": p["a"], "age_s": round(now - p["t"], 2)}
+
+        return {
+            "connected": self.bot is not None,
+            "state": self.state,
+            "battery": self.battery,
+            "robot": pos(self.robot),
+            "dock": pos(self.dock_at),
+        }
+
+
 def _now() -> str:
     return time.strftime("%H:%M:%S")
 
@@ -189,10 +299,7 @@ async def cmd_zone(rect: list[int], index: int, watch: int) -> int:
             replies.append(event.response)
 
         bot.events.subscribe(ev.CustomCommandEvent, on_reply)
-        value = "3,null," + ",".join(map(str, rect))
-        await bot.execute_command(
-            CustomCommand("clean_V2", {"act": "start", "content": {"type": "freeClean", "value": value}})
-        )
+        await bot.execute_command(zone_command(rect))
         await asyncio.sleep(2)
         body = replies[0].get("body", {}) if replies else {}
         print(f"{_now()} zone {rect} sent; robot replied {body}")
@@ -205,6 +312,23 @@ async def cmd_zone(rect: list[int], index: int, watch: int) -> int:
             await asyncio.sleep(watch)
         await mqtt.disconnect()
     return 0
+
+
+async def cmd_stop(index: int) -> int:
+    async with aiohttp.ClientSession() as s:
+        bot, mqtt = await _bot(s, index)
+        replies: list = []
+
+        async def on_reply(event) -> None:
+            replies.append(event.response)
+
+        bot.events.subscribe(ev.CustomCommandEvent, on_reply)
+        await bot.execute_command(stop_command())
+        await asyncio.sleep(2)
+        body = replies[0].get("body", {}) if replies else {}
+        print(f"{_now()} stop sent; robot replied {body}")
+        await mqtt.disconnect()
+    return 0 if body.get("code") == 0 else 1
 
 
 async def cmd_dock(index: int) -> int:
@@ -257,6 +381,7 @@ def main() -> int:
     z = sub.add_parser("zone")
     z.add_argument("rect", nargs=4, type=int, metavar=("X1", "Y1", "X2", "Y2"))
     z.add_argument("--watch", type=int, default=0, help="seconds to print events after sending")
+    sub.add_parser("stop")
     sub.add_parser("dock")
     n = sub.add_parser("sniff")
     n.add_argument("--seconds", type=int, default=300)
@@ -274,6 +399,8 @@ def main() -> int:
             return _run(cmd_watch(a.seconds, a.device))
         case "zone":
             return _run(cmd_zone(a.rect, a.device, a.watch))
+        case "stop":
+            return _run(cmd_stop(a.device))
         case "dock":
             return _run(cmd_dock(a.device))
         case "sniff":
