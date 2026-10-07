@@ -171,9 +171,10 @@ class CloudRobot:
     async def _on_positions(self, event: ev.PositionsEvent) -> None:
         for p in event.positions:
             at = {"x": p.x, "y": p.y, "a": p.a, "t": time.monotonic()}
-            if p.type.name == "DEEBOT":
+            kind = _position_kind(p.type)
+            if kind == "DEEBOT":
                 self.robot = at
-            elif p.type.name == "CHARGER":
+            elif kind == "CHARGER":
                 self.dock_at = at
 
     async def _on_state(self, event: ev.StateEvent) -> None:
@@ -228,6 +229,18 @@ class CloudRobot:
             "robot": pos(self.robot),
             "dock": pos(self.dock_at),
         }
+
+
+def _position_kind(kind: object) -> str:
+    """"DEEBOT" or "CHARGER", whichever shape deebot-client gives us.
+
+    It used to be a Python enum with `.name`. In the version installed on 7 Oct 2026 it is a
+    Rust type (`deebot_client.rs.map.PositionType`) with no `.name` at all, and reading it
+    threw inside the event handler -- so every position the robot sent was dropped and the
+    robot looked like it never reported where it was. `str()` gives "PositionType.DEEBOT"
+    either way.
+    """
+    return getattr(kind, "name", None) or str(kind).rsplit(".", 1)[-1]
 
 
 def _now() -> str:
