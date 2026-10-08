@@ -15,7 +15,9 @@ Usage:
   python vacuum.py verify --code 123456
   python vacuum.py list
   python vacuum.py watch --seconds 60      battery, state, robot and dock positions
-  python vacuum.py zone X1 Y1 X2 Y2        clean that box (map millimetres)
+  python vacuum.py zone X1 Y1 X2 Y2        clean that box (map millimetres), vacuum only
+  python vacuum.py zone X1 Y1 X2 Y2 --mode vacuum_and_mop
+  python vacuum.py mode vacuum             set the work mode and leave it there
   python vacuum.py stop                    stop cleaning (not yet checked on the N50)
   python vacuum.py dock                    go back to the dock
   python vacuum.py sniff --seconds 300     print every message for the robot, incl. the app's orders
@@ -121,6 +123,22 @@ async def _bot(session: aiohttp.ClientSession, index: int) -> tuple[Device, Mqtt
     return bot, mqtt
 
 
+#: The robot's work modes (deebot_client.events.WorkMode). Vacuum only is the default here:
+#: with the mop fitted, an OMNI dock wets and then washes the mop, and the robot took about
+#: 2.5 min to leave the dock on the N50 (3 Oct) -- too slow to show, and it leaves a wet floor.
+WORK_MODES = {"vacuum_and_mop": 0, "vacuum": 1, "mop": 2, "mop_after_vacuum": 3}
+VACUUM_ONLY = "vacuum"
+
+
+def work_mode_command(mode: str) -> CustomCommand:
+    """Set the work mode, as the ECOVACS app's own Vacuum / Mop choice does. Sent as a custom
+    command (not deebot-client's SetWorkMode) to get the robot's reply code back, like the rest
+    of this file."""
+    if mode not in WORK_MODES:
+        raise ValueError(f"work mode must be one of {', '.join(WORK_MODES)}, not {mode!r}")
+    return CustomCommand("setWorkMode", {"mode": WORK_MODES[mode]})
+
+
 def zone_command(rect: list[int]) -> CustomCommand:
     """A zone clean as the ECOVACS app sends it: type "freeClean", value "3,null,x1,y1,x2,y2"
     (3 = zone, then two opposite corners in map millimetres). See `cmd_zone`."""
@@ -141,9 +159,12 @@ class CloudRobot:
     the robot's events. Run it on a selector event loop on Windows (see `_run`).
     """
 
-    def __init__(self, index: int = 0, reply_timeout_s: float = 5.0) -> None:
+    def __init__(
+        self, index: int = 0, reply_timeout_s: float = 5.0, work_mode: str | None = VACUUM_ONLY
+    ) -> None:
         self.index = index
         self.reply_timeout_s = reply_timeout_s
+        self.work_mode = work_mode  # set before every zone clean; None leaves the robot's own
         self.session: aiohttp.ClientSession | None = None
         self.bot: Device | None = None
         self.mqtt: MqttClient | None = None
@@ -198,8 +219,22 @@ class CloudRobot:
             return {"code": None, "msg": f"no reply within {self.reply_timeout_s} s"}
         return reply.get("body", {}) if isinstance(reply, dict) else {}
 
+    async def set_work_mode(self, mode: str) -> dict:
+        return await self._send(work_mode_command(mode))
+
     async def clean_zone(self, rect: list[int]) -> dict:
-        return await self._send(zone_command(rect))
+        """Clean a box, in `self.work_mode` (vacuum only unless told otherwise).
+
+        The mode is sent first and on its own: a refused mode is reported but does not hold the
+        clean back, because the robot still cleans -- in whatever mode it was already in.
+        """
+        mode_reply = None
+        if self.work_mode is not None:
+            mode_reply = await self.set_work_mode(self.work_mode)
+        reply = await self._send(zone_command(rect))
+        if mode_reply is None:
+            return reply
+        return {**reply, "work_mode": {"mode": self.work_mode, **mode_reply}}
 
     async def stop(self) -> dict:
         return await self._send(stop_command())
@@ -297,29 +332,43 @@ async def cmd_watch(seconds: int, index: int) -> int:
     return 0
 
 
-async def cmd_zone(rect: list[int], index: int, watch: int) -> int:
+async def _send_and_print(bot: Device, command: CustomCommand, what: str) -> dict:
+    """Send one order, print the robot's reply, and return its body."""
+    replies: list = []
+
+    async def on_reply(event) -> None:
+        replies.append(event.response)
+
+    unsubscribe = bot.events.subscribe(ev.CustomCommandEvent, on_reply)
+    await bot.execute_command(command)
+    await asyncio.sleep(2)
+    body = replies[0].get("body", {}) if replies else {}
+    print(f"{_now()} {what} sent; robot replied {body}")
+    unsubscribe()
+    return body
+
+
+async def cmd_zone(rect: list[int], index: int, watch: int, mode: str | None) -> int:
     """Clean a box, sent the way the ECOVACS Android app sends a zone clean.
 
     deebot-client's own area clean (clean_V2 type "customArea") is refused by this firmware with
     code 20011 "unknown type". The app, captured with `sniff`, sends type "freeClean" with value
     "3,null,x1,y1,x2,y2": 3 = zone, then two opposite corners in map millimetres.
+
+    The work mode (vacuum only by default) goes first, so the dock does not wet the mop.
     """
     async with aiohttp.ClientSession() as s:
         bot, mqtt = await _bot(s, index)
-        replies: list = []
-
-        async def on_reply(event) -> None:
-            replies.append(event.response)
-
-        bot.events.subscribe(ev.CustomCommandEvent, on_reply)
-        await bot.execute_command(zone_command(rect))
-        await asyncio.sleep(2)
-        body = replies[0].get("body", {}) if replies else {}
-        print(f"{_now()} zone {rect} sent; robot replied {body}")
+        if mode is not None:
+            await _send_and_print(bot, work_mode_command(mode), f"work mode {mode}")
+        body = await _send_and_print(bot, zone_command(rect), f"zone {rect}")
         if body.get("code") != 0:
             await mqtt.disconnect()
             return 1
-        print("The dock may prepare the mop first; leaving took about 2.5 min on the N50.")
+        if mode == VACUUM_ONLY:
+            print("Vacuum only: no mop to prepare, so it should leave the dock straight away.")
+        else:
+            print("The dock may prepare the mop first; leaving took about 2.5 min on the N50.")
         if watch:
             _print_events(bot, {})
             await asyncio.sleep(watch)
@@ -327,19 +376,19 @@ async def cmd_zone(rect: list[int], index: int, watch: int) -> int:
     return 0
 
 
+async def cmd_mode(mode: str, index: int) -> int:
+    """Set the work mode and leave it there (the ECOVACS app shows the same choice)."""
+    async with aiohttp.ClientSession() as s:
+        bot, mqtt = await _bot(s, index)
+        body = await _send_and_print(bot, work_mode_command(mode), f"work mode {mode}")
+        await mqtt.disconnect()
+    return 0 if body.get("code") == 0 else 1
+
+
 async def cmd_stop(index: int) -> int:
     async with aiohttp.ClientSession() as s:
         bot, mqtt = await _bot(s, index)
-        replies: list = []
-
-        async def on_reply(event) -> None:
-            replies.append(event.response)
-
-        bot.events.subscribe(ev.CustomCommandEvent, on_reply)
-        await bot.execute_command(stop_command())
-        await asyncio.sleep(2)
-        body = replies[0].get("body", {}) if replies else {}
-        print(f"{_now()} stop sent; robot replied {body}")
+        body = await _send_and_print(bot, stop_command(), "stop")
         await mqtt.disconnect()
     return 0 if body.get("code") == 0 else 1
 
@@ -394,6 +443,15 @@ def main() -> int:
     z = sub.add_parser("zone")
     z.add_argument("rect", nargs=4, type=int, metavar=("X1", "Y1", "X2", "Y2"))
     z.add_argument("--watch", type=int, default=0, help="seconds to print events after sending")
+    z.add_argument(
+        "--mode",
+        choices=[*WORK_MODES, "keep"],
+        default=VACUUM_ONLY,
+        help="work mode to set first (default vacuum: no mop, no wait at the dock); "
+        "keep = leave the robot's own",
+    )
+    m = sub.add_parser("mode")
+    m.add_argument("mode", choices=list(WORK_MODES))
     sub.add_parser("stop")
     sub.add_parser("dock")
     n = sub.add_parser("sniff")
@@ -411,7 +469,9 @@ def main() -> int:
         case "watch":
             return _run(cmd_watch(a.seconds, a.device))
         case "zone":
-            return _run(cmd_zone(a.rect, a.device, a.watch))
+            return _run(cmd_zone(a.rect, a.device, a.watch, None if a.mode == "keep" else a.mode))
+        case "mode":
+            return _run(cmd_mode(a.mode, a.device))
         case "stop":
             return _run(cmd_stop(a.device))
         case "dock":

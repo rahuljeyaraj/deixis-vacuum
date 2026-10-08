@@ -13,6 +13,8 @@ This is the vacuum adapter for [deixis-doodle](https://github.com/rahuljeyaraj/d
 
 The test: `zone 1850 -950 2350 -450` (a 50 cm box, in map millimetres) was sent at 20:44:43. The robot left the dock about 2.5 minutes later, and its reported positions traced that box: x 1859 to 2353, y −902 to −451. Then it returned to its dock by itself.
 
+Those 2.5 minutes were the dock wetting the mop. Since 8 Oct a clean is sent as vacuum only, which skips that preparation and leaves the floor dry. The new start has not been timed on the robot yet.
+
 ## What we learned
 
 - **Login now needs an e-mailed code.** Since mid-2026, ECOVACS answers a login from an unknown device ID with code 1013 ("Please update to the latest version"). `verify` asks for a code and approves a fixed device ID. A fresh password login after that can still fail ([client.py#1777](https://github.com/DeebotUniverse/client.py/issues/1777)), so the token from verification (valid 7 days) is saved and reused.
@@ -24,6 +26,7 @@ The test: `zone 1850 -950 2350 -450` (a 50 cm box, in map millimetres) was sent 
   ```
 
   `3` means zone. The four numbers are two opposite corners in map millimetres. Others report that room cleans use the same type with value `1,<room id>` (not tested here).
+- **The mop is what makes it slow to start.** With the mop fitted, the OMNI dock wets it and washes it again on the way back, and the robot took about 2.5 minutes to leave the dock. Sending `setWorkMode` with `{"mode": 1}` (vacuum only) before the zone order skips all of that, and leaves the floor dry. The modes are 0 vacuum and mop, 1 vacuum, 2 mop, 3 mop after vacuum. `zone` sets vacuum only by default; `--mode keep` leaves whatever the robot is on.
 - **Windows:** deebot-client 18.x has Windows wheels for Python 3.14 only, and its MQTT client needs the selector event loop (see `_run`).
 
 ## Set-up
@@ -47,7 +50,8 @@ Copy `ecovacs.env.example` to `ecovacs.env` in this folder and fill in your ECOV
 |---|---|
 | `list` | Robots on the account, with class codes |
 | `watch --seconds 60` | Prints battery, state, errors, and robot and dock positions (map mm) |
-| `zone X1 Y1 X2 Y2 [--watch 120]` | Cleans that box |
+| `zone X1 Y1 X2 Y2 [--watch 120]` | Cleans that box, **vacuum only** (no mop, so no wait at the dock). `--mode vacuum_and_mop\|mop\|mop_after_vacuum` picks another mode, `--mode keep` leaves the robot's own |
+| `mode vacuum` | Sets the work mode and leaves it there (the same choice as in the app) |
 | `stop` | Stops cleaning. Sends the same order as deebot-client's own stop. **Not yet tried on the N50.** If the robot refuses it, run `sniff` while you press stop in the app |
 | `dock` | Sends the robot back to its dock |
 | `sniff --seconds 300` | Prints every message for the robot, including the orders the official app sends. Use it to learn a new robot's commands. |
@@ -62,7 +66,7 @@ To find a box: run `watch`, or run `sniff` while you draw a zone in the app.
 
 | Tool | What it does |
 |---|---|
-| `clean_area(where)` | Cleans one box. `where` is a deixis `Where` box in the robot's map frame: `{"frame": "map", "kind": "box", "box_mm": [x, y, width, height], ...}`. The box is cleaned exactly as given. A box in another frame, or with a side under 200 mm or over 8 m, is refused with the reason. It's never moved or shrunk to fit |
+| `clean_area(where)` | Cleans one box, vacuum only (`--work-mode` changes that; `keep` leaves the robot's own). `where` is a deixis `Where` box in the robot's map frame: `{"frame": "map", "kind": "box", "box_mm": [x, y, width, height], ...}`. The box is cleaned exactly as given. A box in another frame, or with a side under 200 mm or over 8 m, is refused with the reason. It's never moved or shrunk to fit |
 | `stop()` | Stops cleaning |
 | `dock()` | Sends the robot back to its dock |
 | `status()` | State, battery, and the robot's and dock's positions in map mm, with how old each is |
@@ -85,7 +89,7 @@ uv pip install --python .venv\Scripts\python.exe -e ".[test]"
 ## Safety and rules
 
 - Clear the floor and stay near the robot. The app's stop button always works.
-- This uses the same cloud API as the app, with your own account and your own robot. Nothing changes the robot's firmware or settings.
+- This uses the same cloud API as the app, with your own account and your own robot. Nothing changes the robot's firmware. The one setting it does change is the work mode, which it sets to vacuum only before a clean, exactly as the app's own Vacuum / Mop choice does; the robot keeps that mode afterwards.
 - ECOVACS doesn't officially support third-party control. Treat this as a demo, not something to depend on.
 - ECOVACS and DEEBOT are trademarks of ECOVACS Robotics. This project isn't affiliated with or endorsed by them.
 

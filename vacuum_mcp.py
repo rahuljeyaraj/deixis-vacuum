@@ -9,6 +9,8 @@ This server knows nothing else about deixis: it reads `frame`, `kind` and `box_m
 a zone clean of exactly that box. A box it can't use is refused with the reason, never moved
 or shrunk to fit.
 
+It cleans vacuum only: no mop, so the dock does not wash and wet one first (`--work-mode`).
+
 Tools:
 - clean_area(where): clean that box (a zone clean, as the ECOVACS app sends one).
 - stop(): stop cleaning now.
@@ -30,6 +32,9 @@ import sys
 from typing import Any
 
 from mcp.server.mcpserver import MCPServer
+
+#: Work mode names, as `vacuum.WORK_MODES` (kept here so --fake needs no deebot-client).
+WORK_MODES = ("vacuum", "vacuum_and_mop", "mop", "mop_after_vacuum")
 
 log = logging.getLogger("deixis-vacuum")
 
@@ -65,15 +70,15 @@ def build_server(
         version="0.2.0",
         instructions=(
             "A robot vacuum. clean_area takes a deixis Where box in the robot's map frame "
-            "(map mm) and cleans exactly that box; stop, dock, status and locate do what "
-            "they say."
+            "(map mm) and cleans exactly that box, vacuum only; stop, dock, status and locate "
+            "do what they say."
         ),
     )
 
     @mcp.tool()
     async def clean_area(where: dict[str, Any]) -> dict[str, Any]:
-        """Clean this box: a deixis Where with frame 'map', kind 'box' and box_mm
-        [x, y, width, height] in map mm."""
+        """Clean this box (vacuum only, no mop): a deixis Where with frame 'map', kind 'box'
+        and box_mm [x, y, width, height] in map mm."""
         rect, why = zone_from_where(where, frame, min_side_mm, max_side_mm)
         if rect is None:
             log.warning("clean_area refused: %s", why)
@@ -128,18 +133,26 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--max-side", type=float, default=8000.0, help="largest box side, mm")
     ap.add_argument("--fake-speed", type=float, default=300.0, help="--fake: mm per second")
     ap.add_argument("--fake-leave", type=float, default=0.0, help="--fake: s on the dock first")
+    ap.add_argument(
+        "--work-mode",
+        default="vacuum",
+        help="work mode set before every clean (default vacuum: no mop); keep = the robot's own",
+    )
     a = ap.parse_args(sys.argv[1:] if argv is None else argv)
     logging.basicConfig(level=logging.INFO, stream=sys.stderr, format="%(name)s: %(message)s")
+    mode = None if a.work_mode == "keep" else a.work_mode
+    if mode is not None and mode not in WORK_MODES:
+        ap.error(f"--work-mode must be keep or one of {', '.join(WORK_MODES)}")
     if a.fake:
         from fake_robot import FakeRobot
 
-        robot: Any = FakeRobot(speed_mm_s=a.fake_speed, leave_s=a.fake_leave)
+        robot: Any = FakeRobot(speed_mm_s=a.fake_speed, leave_s=a.fake_leave, work_mode=mode)
     else:
         import vacuum
 
         logging.getLogger("deebot_client.api_client").setLevel(logging.ERROR)
         vacuum._load_env_file()
-        robot = vacuum.CloudRobot(a.device)
+        robot = vacuum.CloudRobot(a.device, work_mode=mode)
     coro = serve(robot, frame=a.frame, min_side_mm=a.min_side, max_side_mm=a.max_side)
     if sys.platform == "win32":  # MQTT needs add_reader, which the Proactor loop lacks
         asyncio.run(coro, loop_factory=asyncio.SelectorEventLoop)

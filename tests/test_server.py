@@ -4,10 +4,12 @@ import asyncio
 import sys
 from pathlib import Path
 
+from deebot_client.commands.json.custom import CustomCommand
 from mcp.client.session import ClientSession
 from mcp.client.stdio import StdioServerParameters, stdio_client
 
 from fake_robot import FakeRobot
+from vacuum import WORK_MODES, work_mode_command
 from vacuum_mcp import zone_from_where
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -45,6 +47,8 @@ def test_a_box_on_the_map_is_cleaned_exactly():
     )
     assert set(tools) == {"clean_area", "stop", "dock", "status", "locate"}
     assert res["ok"] and res["zone"] == [1850, -950, 2350, -451]
+    assert res["reply"]["work_mode"]["mode"] == "vacuum"  # no mop: no wait at the dock
+    assert st["work_mode"] == "vacuum"
     assert st["fake"] and st["robot"] is not None and st["dock"] == {"x": 24, "y": 287, "a": 0,
                                                                      "age_s": 0.0}  # fmt: skip
 
@@ -102,4 +106,23 @@ def test_the_fake_robot_drives_to_the_zone_and_round_it():
     clock.t = 2000
     s = r.status()
     assert s["state"] == "docked" and (s["robot"]["x"], s["robot"]["y"]) == (0, 0)
-    assert [o["order"] for o in r.orders] == ["zone", "stop", "dock"]
+    assert [o["order"] for o in r.orders] == ["work_mode", "zone", "stop", "dock"]
+    assert r.orders[0]["mode"] == "vacuum"
+
+
+def test_the_work_mode_order_is_the_app_s_vacuum_only_choice():
+    order = work_mode_command("vacuum")
+    assert order == CustomCommand("setWorkMode", {"mode": 1}) and order.NAME == "setWorkMode"
+    assert WORK_MODES["vacuum_and_mop"] == 0  # deebot_client.events.WorkMode
+    try:
+        work_mode_command("dust")
+    except ValueError as e:
+        assert "vacuum" in str(e)
+    else:
+        raise AssertionError("an unknown work mode must be refused")
+
+
+def test_the_robot_s_own_mode_is_left_alone_when_asked():
+    r = FakeRobot(work_mode=None)
+    asyncio.run(r.clean_zone([0, 0, 500, 500]))
+    assert [o["order"] for o in r.orders] == ["zone"]
