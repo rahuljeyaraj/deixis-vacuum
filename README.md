@@ -2,7 +2,9 @@
 
 Send a robot vacuum to clean a box on its map from Python or over MCP: "clean **here**".
 
-This is the vacuum adapter for [deixis-doodle](https://github.com/rahuljeyaraj/deixis-doodle), which turns pointing and speech into a place (`Where`) that any robot can use. deixis-doodle drives a pen plotter, and this repo drives an unmodified, off-the-shelf robot vacuum. It's a separate repo because it uses [deebot-client](https://github.com/DeebotUniverse/client.py), which is GPL-3.0. deixis-doodle stays MIT.
+This is the robot vacuum's driver for [deixis](https://github.com/rahuljeyaraj/deixis), the core that turns pointing and speech into a place (`Where`) that any robot can use. The vacuum app in [deixis-doodle](https://github.com/rahuljeyaraj/deixis-doodle) ("clean here") sends that place here, and this repo drives an unmodified, off-the-shelf robot vacuum. It's a separate repo because it uses [deebot-client](https://github.com/DeebotUniverse/client.py), which is GPL-3.0. deixis and deixis-doodle stay MIT. All of them are in one clone at [deixis-robots](https://github.com/rahuljeyaraj/deixis-robots).
+
+It needs Python 3.14 (see Set-up), unlike the other repos.
 
 ## Result (3 Oct 2026)
 
